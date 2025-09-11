@@ -126,9 +126,9 @@ function truncateTitle(str, maxLength = 7) {
 
 useEffect(()=>{
   if(selected){
-    document.title = `${truncateTitle(selected.title, 7)} - WikiNote`;
+    document.title = `${truncateTitle(selected.title, 7)} - ✏️WikiNote`;
   } else {
-    document.title = "WikiNote";
+    document.title = "✏️WikiNote";
   }
 },[selected]);
   
