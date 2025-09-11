@@ -112,7 +112,7 @@ export default function App(){
   const loaded = loadNotes();
   if (loaded.length) return loaded;     // 기존 사용자 데이터는 그대로
   return sampleNotes();                 // 첫 방문자에게 예시 노트 제공
-+ });
+});
   const [selectedId,setSelectedId]=useState(notes[0]?.id||null);
   const selected=useMemo(()=>notes.find(n=>n.id===selectedId)||null,[notes,selectedId]);
   const [query,setQuery]=useState("");
@@ -173,10 +173,26 @@ export default function App(){
 
   return (
     <div className="h-full w-full p-4 grid grid-rows-[auto,1fr] gap-4 bg-gray-50">
-      <header className="flex items-center gap-2 bg-white p-2 rounded-xl shadow">
-        <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="검색" className="px-3 py-2 flex-1 bg-gray-100 rounded-xl" />
-        <button onClick={()=>{const n=createEmptyNote(); setNotes([n,...notes]); setSelectedId(n.id);}} className="px-3 py-2 bg-blue-500 text-white rounded-xl">+ 새 노트</button>
-      </header>
+<header className="flex items-center justify-between gap-3 bg-white p-2 rounded-xl shadow">
+  <div className="flex items-center gap-2 px-1 select-none">
+    <span className="text-2xl" aria-hidden>{BRAND_ICON}</span>
+    <span className="text-lg font-bold tracking-tight">{BRAND_TITLE}</span>
+  </div>
+  <div className="flex items-center gap-2 flex-1">
+    <input
+      value={query}
+      onChange={e=>setQuery(e.target.value)}
+      placeholder="노트 전체에서 검색"
+      className="px-3 py-2 flex-1 bg-gray-100 rounded-xl"
+    />
+    <button
+      onClick={()=>{const n=createEmptyNote(); setNotes([n,...notes]); setSelectedId(n.id);}}
+      className="px-3 py-2 bg-blue-500 text-white rounded-xl"
+    >
+      + 새 노트
+    </button>
+  </div>
+</header>
 
       <main className="grid grid-cols-4 gap-4">
         <aside className="col-span-1 bg-white rounded-xl shadow p-2 overflow-y-auto">
