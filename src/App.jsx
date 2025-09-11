@@ -53,6 +53,50 @@ function sectionsToHTML(sections = []) {
   return sections.map(s => `<section><h3>${s.cue||""}</h3>${ensureStringHTML(s.html)}</section>`).join("\n");
 }
 
+// --- Sample Notes (for first-time users) ----------------------------------
+function makeSampleNote({ title, unit, tags = [], summary = "", cueLines = [], sectionsHtml = [] }) {
+  const cue = cueLines.join("\n");
+  const sections = cueLines.map((c, i) => {
+    const html = sectionsHtml[i] || "<p></p>";
+    return { id: uid(), cue: c, html, text: stripTags(html), collapsed: false };
+  });
+  return {
+    id: uid(), title, unit, tags, summary, cue, sections,
+    notesHTML: sectionsToHTML(sections),
+    notesText: sections.map(s => `${s.cue}\n${stripTags(s.html)}`).join("\n\n"),
+    createdAt: nowISO(), updatedAt: nowISO(),
+  };
+}
+
+function sampleNotes() {
+  const n1 = makeSampleNote({
+    title: "수학 I — 극한의 개념",
+    unit: "수학 I / 극한",
+    tags: ["수학", "극한", "미적분"],
+    summary: "좌/우극한이 동일하면 극한 존재. 함수값과 극한값은 다를 수 있음.",
+    cueLines: ["극한의 직관적 의미", "좌극한/우극한", "연속성과의 관계"],
+    sectionsHtml: [
+      "<p>x→a일 때 f(x)가 가까워지는 값에 대한 개념 정리</p>",
+      "<ul><li>좌극한 lim<sub>x→a-</sub> f(x)</li><li>우극한 lim<sub>x→a+</sub> f(x)</li><li>같으면 극한 존재</li></ul>",
+      "<p>연속이면 함수값 = 극한값. 불연속 유형: 제거/도약/무한</p>",
+    ],
+  });
+  const n2 = makeSampleNote({
+    title: "생명과학 — 광합성 요약",
+    unit: "생명과학 / 식물",
+    tags: ["생명과학", "광합성"],
+    summary: "명반응에서 ATP/NADPH 생성, 암반응(Calvin)에서 탄소고정.",
+    cueLines: ["명반응", "암반응(Calvin cycle)", "광합성에 영향 주는 요인"],
+    sectionsHtml: [
+      "<p>빛 사용, 틸라코이드 막, 물의 광분해 → O<sub>2</sub></p>",
+      "<p>RuBisCO에 의한 CO<sub>2</sub> 고정, G3P 형성</p>",
+      "<ul><li>빛의 세기</li><li>CO<sub>2</sub> 농도</li><li>온도</li></ul>",
+    ],
+  });
+  return [n1, n2];
+}
+
+
 function createEmptyNote() {
   return { id: uid(), title: "새 노트", cue: "", sections: [], summary: "", tags: [], unit: "", createdAt: nowISO(), updatedAt: nowISO(), notesHTML: "", notesText: "" };
 }
@@ -64,7 +108,11 @@ function useDebouncedEffect(effect,deps,delay=600){ useEffect(()=>{const h=setTi
 
 // --- Main App ------------------------------------------------------------
 export default function App(){
-  const [notes,setNotes]=useState(()=>loadNotes().length?loadNotes():[createEmptyNote()]);
+  const [notes,setNotes]=useState(()=>{
+  const loaded = loadNotes();
+  if (loaded.length) return loaded;     // 기존 사용자 데이터는 그대로
+  return sampleNotes();                 // 첫 방문자에게 예시 노트 제공
++ });
   const [selectedId,setSelectedId]=useState(notes[0]?.id||null);
   const selected=useMemo(()=>notes.find(n=>n.id===selectedId)||null,[notes,selectedId]);
   const [query,setQuery]=useState("");
