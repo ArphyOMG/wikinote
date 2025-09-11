@@ -32,6 +32,9 @@ import Placeholder from "@tiptap/extension-placeholder";
 import Image from "@tiptap/extension-image";
 import Link from "@tiptap/extension-link";
 import { DragDropContext, Droppable, Draggable } from "react-beautiful-dnd";
++ // --- Brand -----------------------------------------------------------------
++ const BRAND_ICON = "✏️"; // 상단 아이콘 (📓/✏️/📚 등으로 바꿔도 돼요)
++ const BRAND_TITLE = "WikiNote"; // 상단 타이틀 텍스트
 
 // --- Utilities -----------------------------------------------------------
 const LS_KEY = "cornell.notes.v3"; // bump key (structure change)
