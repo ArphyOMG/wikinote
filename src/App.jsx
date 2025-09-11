@@ -116,7 +116,54 @@ export default function App(){
   const [selectedId,setSelectedId]=useState(notes[0]?.id||null);
   const selected=useMemo(()=>notes.find(n=>n.id===selectedId)||null,[notes,selectedId]);
   const [query,setQuery]=useState("");
+// --- tags input state
+const [tagInput, setTagInput] = useState("");
 
+// 태그 추가/삭제
+const addTag = (raw) => {
+  if (!selected) return;
+  const t = (raw || "").trim();
+  if (!t) return;
+  const uniq = Array.from(new Set([...(selected.tags || []), t]));
+  updateSelected({ tags: uniq });
+  setTagInput("");
+};
+const removeTag = (t) => {
+  if (!selected) return;
+  updateSelected({ tags: (selected.tags || []).filter(x => x !== t) });
+};
+
+// 노트 삭제
+const deleteSelectedNote = () => {
+  if (!selected) return;
+  const hasContent =
+    (selected.sections || []).some(s => stripTags(s.html) !== "") ||
+    stripTags(selected.summary) !== "" ||
+    (selected.title && selected.title !== "새 노트");
+
+  const ok = window.confirm(
+    hasContent
+      ? "이 노트를 삭제할까요? (복구할 수 없어요)"
+      : "빈 노트를 삭제할까요?"
+  );
+  if (!ok) return;
+
+  setNotes(prev => {
+    const next = prev.filter(n => n.id !== selected.id);
+    setSelectedId(next[0]?.id || null);
+    return next;
+  });
+};
+
+// 섹션 삭제
+const deleteSection = (id) => {
+  if (!selected) return;
+  const s = (selected.sections || []).find(x => x.id === id);
+  const has = s && stripTags(s.html) !== "";
+  if (has && !window.confirm("이 섹션을 삭제할까요?")) return;
+  const sections = (selected.sections || []).filter(x => x.id !== id);
+  updateSelected({ sections });
+};
   useDebouncedEffect(()=>saveNotes(notes),[notes],400);
   
 function truncateTitle(str, maxLength = 7) {
@@ -198,12 +245,16 @@ useEffect(()=>{
       placeholder="노트 전체에서 검색"
       className="px-3 py-2 flex-1 bg-gray-100 rounded-xl"
     />
-    <button
-      onClick={()=>{const n=createEmptyNote(); setNotes([n,...notes]); setSelectedId(n.id);}}
-      className="px-3 py-2 bg-blue-500 text-white rounded-xl"
-    >
-      + 새 노트
-    </button>
+      <button
+        onClick={()=>{const n=createEmptyNote(); setNotes([n,...notes]); setSelectedId(n.id);}}
+        className="px-3 py-2 bg-blue-500 text-white rounded-xl"
+      >+ 새 노트</button>
+      <button
+        onClick={deleteSelectedNote}
+        disabled={!selected}
+        className="px-3 py-2 bg-red-500 text-white rounded-xl disabled:opacity-50"
+      >노트 삭제</button>
+
   </div>
 </header>
 
@@ -221,6 +272,34 @@ useEffect(()=>{
           {selected && (
             <>
               <input value={selected.title} onChange={e=>updateSelected({title:e.target.value})} className="text-lg font-semibold border-b mb-2 outline-none" placeholder="노트 제목" />
+{/* Tags editor */}
+<div className="mb-2">
+  <label className="text-sm text-gray-600">태그</label>
+  <div className="mt-1 flex flex-wrap gap-2">
+    {(selected.tags || []).map(t => (
+      <span key={t} className="inline-flex items-center gap-1 bg-gray-100 border rounded-xl px-2 py-1 text-sm">
+        #{t}
+        <button
+          onClick={()=>removeTag(t)}
+          className="text-gray-500 hover:text-gray-800"
+          title="태그 제거"
+        >×</button>
+      </span>
+    ))}
+    <input
+      value={tagInput}
+      onChange={e=>setTagInput(e.target.value)}
+      onKeyDown={e=>{
+        if (e.key === "Enter" || e.key === ",") {
+          e.preventDefault();
+          addTag(tagInput.replace(/,/, ""));
+        }
+      }}
+      placeholder="태그 입력 후 Enter (예: 통계)"
+      className="px-2 py-1 border rounded-xl text-sm"
+    />
+  </div>
+</div>
 
               {/* Cue area (left panel concept) */}
               <label className="text-sm text-gray-600 mb-1">질문/키워드 (한 줄 = 한 섹션 제목)</label>
@@ -242,9 +321,21 @@ useEffect(()=>{
                               {/* UI divider via border (not content <hr>) */}
                               <div className="flex items-center justify-between bg-gray-50 p-2" {...p.dragHandleProps}>
                                 <div className="font-semibold">{sec.cue||"(제목없음)"}</div>
-                                <button onClick={()=>updateSection(sec.id,{collapsed:!sec.collapsed})} className="text-xs px-2 py-1 border rounded">
-                                  {sec.collapsed?"펼치기":"접기"}
-                                </button>
+                                <div className="flex items-center gap-2">
+                                  <button
+                                    onClick={()=>updateSection(sec.id,{collapsed:!sec.collapsed})}
+                                    className="text-xs px-2 py-1 border rounded"
+                                  >
+                                    {sec.collapsed?"펼치기":"접기"}
+                                  </button>
+                                  <button
+                                    onClick={()=>deleteSection(sec.id)}
+                                    className="text-xs px-2 py-1 border rounded border-red-300 text-red-600"
+                                    title="섹션 삭제"
+                                  >
+                                    삭제
+                                  </button>
+                                </div>
                               </div>
                               {!sec.collapsed && (
                                 <SectionEditor section={sec} onChange={(patch)=>updateSection(sec.id,patch)} />
