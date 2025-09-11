@@ -118,7 +118,15 @@ export default function App(){
   const [query,setQuery]=useState("");
 
   useDebouncedEffect(()=>saveNotes(notes),[notes],400);
-
+  
+useEffect(()=>{
+  if(selected){
+    document.title = `${selected.title} - ✏️WikiNote`;
+  } else {
+    document.title = "✏️WikiNote";
+  }
+},[selected]);
+  
   const updateSelected=(patch)=>{
     if(!selected) return;
     let next={...selected,...patch};
