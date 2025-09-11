@@ -119,11 +119,16 @@ export default function App(){
 
   useDebouncedEffect(()=>saveNotes(notes),[notes],400);
   
+function truncateTitle(str, maxLength = 7) {
+  if (!str) return "";
+  return str.length > maxLength ? str.slice(0, maxLength) + "…" : str;
+}
+
 useEffect(()=>{
   if(selected){
-    document.title = `${selected.title} - ✏️WikiNote`;
+    document.title = `${truncateTitle(selected.title, 7)} - WikiNote`;
   } else {
-    document.title = "✏️WikiNote";
+    document.title = "WikiNote";
   }
 },[selected]);
   
