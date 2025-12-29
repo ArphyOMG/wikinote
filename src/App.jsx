@@ -1,29 +1,3 @@
-// Cornell Note Seed App (React + Tiptap) — Cornell 3-Panel with Section Rules
-// -----------------------------------------------------------------------------
-// Improvements based on feedback:
-// 1) Section mapping stays index-based when editing cue lines.
-// 2) When a cue line is deleted: if the section has NO content -> drop it; if it HAS content -> keep it with EMPTY title.
-// 3) Sections are draggable in the content area (drag handle) to reorder.
-// 4) Each section supports collapse/expand (UI-only; content preserved).
-// 5) Diagnostics panel added with tests for mapping, deletion rule, reordering, and collapse flags.
-// -----------------------------------------------------------------------------
-// ⚠️ ProseMirror multi-version guard
-// If you see: RangeError: Can not convert <> to a Fragment (multiple versions of prosemirror-model)
-// → Fix dependencies to a single version (package.json overrides/resolutions) and dedupe in bundler.
-// npm/pnpm overrides example:
-// {
-//   "overrides": {
-//     "prosemirror-model": "^1.19.3",
-//     "prosemirror-state": "^1.4.3",
-//     "prosemirror-view": "^1.31.2",
-//     "prosemirror-transform": "^1.7.3",
-//     "prosemirror-schema-list": "^1.2.2"
-//   }
-// }
-// Also ensure all @tiptap/* versions match, and avoid mixing CDN + bundled builds.
-// Runtime hardening below: editors start with safe empty content and only call setContent
-// inside useEffect after each editor is ready. We never pass React nodes to setContent.
-// -----------------------------------------------------------------------------
 // Cornell Note Seed App (React + Tiptap + Firebase)
 // -----------------------------------------------------------------------------
 // 기획자님을 위해 파이어베이스(Firebase) DB와 연결된 버전입니다.
@@ -36,14 +10,14 @@ import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import Image from "@tiptap/extension-image";
 import Link from "@tiptap/extension-link";
-// from 부분이 바뀌었습니다!
 import { DragDropContext, Droppable, Draggable } from "@hello-pangea/dnd";
 
-// [1] 파이어베이스 추가 (중요!)
+// [1] 파이어베이스 추가
 import { initializeApp } from "firebase/app";
+// ★★★ [중요] query를 firestoreQuery로 이름 변경 (충돌 방지) ★★★
 import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, query as firestoreQuery, orderBy } from "firebase/firestore";
 
-// --- 파이어베이스 설정 (기획자님의 열쇠) ---
+// --- 파이어베이스 설정 ---
 const firebaseConfig = {
   apiKey: "AIzaSyAwxaLsgOVoPclbbPR0gMl4ivFTOBm2YVk",
   authDomain: "wikinote-e6127.firebaseapp.com",
@@ -80,53 +54,43 @@ function createEmptyNote() {
   return { id: uid(), title: "새 노트", cue: "", sections: [], summary: "", tags: [], unit: "", createdAt: nowISO(), updatedAt: nowISO(), notesHTML: "", notesText: "" };
 }
 
-// [삭제됨] loadNotes, saveNotes (이제 로컬스토리지 대신 DB를 씁니다)
-
 function useDebouncedEffect(effect,deps,delay=600){ useEffect(()=>{const h=setTimeout(effect,delay); return ()=>clearTimeout(h);},[...deps,delay]); }
 
 // --- Main App ------------------------------------------------------------
 export default function App(){
-  // [2] 상태 관리: DB에서 불러오기 전엔 빈 배열
   const [notes, setNotes] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
-  
-  // 선택된 노트 찾기
   const selected = useMemo(() => notes.find(n => n.id === selectedId) || null, [notes, selectedId]);
   
+  // 여기서 사용하는 'query'는 검색어를 뜻하는 변수입니다. (파이어베이스 query 아님!)
   const [query, setQuery] = useState("");
   const [tagInput, setTagInput] = useState("");
 
-  // [3] DB 실시간 연결 (제일 중요한 부분!)
-  // 앱이 켜지면 파이어베이스 'notes' 컬렉션을 구독합니다.
+  // [3] DB 실시간 연결
   useEffect(() => {
-  // 이제 명확합니다!
+    // ★★★ [중요] 아까 위에서 바꾼 이름(firestoreQuery)을 사용합니다 ★★★
     const q = firestoreQuery(collection(db, "notes"), orderBy("updatedAt", "desc"));
+    
     const unsubscribe = onSnapshot(q, (snapshot) => {
-  ...
-      // DB가 바뀌면 여기로 데이터가 쏫아져 들어옵니다.
       const loadedNotes = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
       setNotes(loadedNotes);
-      
-      // 만약 선택된 노트가 없으면 첫번째꺼 선택
       if (!selectedId && loadedNotes.length > 0) {
         setSelectedId(loadedNotes[0].id);
       }
     });
-    return () => unsubscribe(); // 앱 끌 때 연결 해제
-  }, []); // 처음에 한 번만 실행
+    return () => unsubscribe();
+  }, []); 
 
-  // [4] 자동 저장 (내용이 바뀌면 DB에 저장)
+  // [4] 자동 저장
   useDebouncedEffect(() => {
     if (selected) {
-      // 선택된 노트만 DB에 덮어쓰기 (Update)
       const docRef = doc(db, "notes", selected.id);
       setDoc(docRef, selected)
         .then(() => console.log("자동 저장 완료:", selected.title))
         .catch(err => console.error("저장 실패:", err));
     }
-  }, [selected], 800); // 0.8초 동안 입력 없으면 저장
+  }, [selected], 800);
 
-  // 태그 추가
   const addTag = (raw) => {
     if (!selected) return;
     const t = (raw || "").trim();
@@ -141,26 +105,20 @@ export default function App(){
     updateSelected({ tags: (selected.tags || []).filter(x => x !== t) });
   };
 
-  // [5] 노트 삭제 (DB에서 삭제)
   const deleteSelectedNote = async () => {
     if (!selected) return;
     const ok = window.confirm("정말 이 노트를 삭제하시겠습니까? (DB에서 완전히 삭제됩니다)");
     if (!ok) return;
-
     try {
-      await deleteDoc(doc(db, "notes", selected.id)); // DB 삭제 명령
-      // 화면에서는 onSnapshot이 알아서 업데이트 해줌
+      await deleteDoc(doc(db, "notes", selected.id));
       setSelectedId(null); 
     } catch (e) {
       alert("삭제 실패: " + e.message);
     }
   };
 
-  // [6] 새 노트 만들기 (DB에 추가)
   const createNewNote = async () => {
     const n = createEmptyNote();
-    // 로컬 상태를 먼저 업데이트하는 게 아니라, DB에 넣으면 onSnapshot이 알아서 가져옴
-    // 하지만 빠른 반응을 위해 로컬에도 추가하는 척 할 수 있지만, 여기선 심플하게 바로 저장
     try {
       await setDoc(doc(db, "notes", n.id), n);
       setSelectedId(n.id);
@@ -186,7 +144,6 @@ export default function App(){
     if(!selected) return;
     let next={...selected,...patch};
 
-    // 큐(Cue) 라인 변경 로직 (기존 유지)
     if(Object.prototype.hasOwnProperty.call(patch, "cue")){
       const lines=(patch.cue||"").split(/\n+/);
       const prev=selected.sections||[];
@@ -209,8 +166,6 @@ export default function App(){
     next.notesHTML=sectionsToHTML(next.sections||[]);
     next.notesText=(next.sections||[]).map(s=>`${s.cue}\n${stripTags(s.html)}`).join("\n\n");
     next.updatedAt=nowISO();
-
-    // 로컬 상태 즉시 업데이트 (화면 버벅임 방지)
     setNotes(prev=>prev.map(n=>n.id===selected.id?next:n));
   };
 
@@ -246,11 +201,11 @@ export default function App(){
       className="px-3 py-2 flex-1 bg-gray-100 rounded-xl"
     />
       <button
-        onClick={createNewNote} // [수정] 새 노트 함수 연결
+        onClick={createNewNote}
         className="px-3 py-2 bg-blue-500 text-white rounded-xl"
       >+ 새 노트</button>
       <button
-        onClick={deleteSelectedNote} // [수정] 삭제 함수 연결
+        onClick={deleteSelectedNote}
         disabled={!selected}
         className="px-3 py-2 bg-red-500 text-white rounded-xl disabled:opacity-50"
       >노트 삭제</button>
@@ -273,7 +228,6 @@ export default function App(){
           {selected && (
             <>
               <input value={selected.title} onChange={e=>updateSelected({title:e.target.value})} className="text-lg font-semibold border-b mb-2 outline-none" placeholder="노트 제목" />
-{/* Tags editor */}
 <div className="mb-2">
   <label className="text-sm text-gray-600">태그</label>
   <div className="mt-1 flex flex-wrap gap-2">
@@ -302,11 +256,9 @@ export default function App(){
   </div>
 </div>
 
-              {/* Cue area (left panel concept) */}
               <label className="text-sm text-gray-600 mb-1">질문/키워드 (한 줄 = 한 섹션 제목)</label>
               <textarea value={selected.cue} onChange={e=>updateSelected({cue:e.target.value})} placeholder="예) 왜 3의 배수 규칙이 성립하죠?\n예) 좌극한/우극한 차이는?" className="w-full mb-3 p-2 border rounded resize-y min-h-[6rem]" />
 
-              {/* Sections (right content area) */}
               <DragDropContext onDragEnd={reorderSections}>
                 <Droppable droppableId="sections">
                   {(provided)=> (
@@ -319,7 +271,6 @@ export default function App(){
                         <Draggable key={sec.id} draggableId={sec.id} index={idx}>
                           {(p)=> (
                             <div ref={p.innerRef} {...p.draggableProps} className="border rounded mb-3">
-                              {/* UI divider via border (not content <hr>) */}
                               <div className="flex items-center justify-between bg-gray-50 p-2" {...p.dragHandleProps}>
                                 <div className="font-semibold">{sec.cue||"(제목없음)"}</div>
                                 <div className="flex items-center gap-2">
@@ -353,7 +304,6 @@ export default function App(){
 
               <label className="text-sm text-gray-600 mt-3 mb-1">요약</label>
               <textarea value={selected.summary} onChange={e=>updateSelected({summary:e.target.value})} placeholder="핵심 내용을 3~5문장으로 요약" className="p-2 border rounded min-h-[5rem]" />
-
               <Diagnostics selected={selected} />
             </>
           )}
@@ -363,7 +313,6 @@ export default function App(){
   );
 }
 
-// --- Section Editor (변경 없음) ---------------------------------------------
 function SectionEditor({section,onChange}){
   const fileRef = useRef(null);
   const editor=useEditor({
@@ -377,12 +326,9 @@ function SectionEditor({section,onChange}){
     onUpdate:({editor})=>{onChange({html:editor.getHTML(),text:editor.getText()});},
     editorProps:{attributes:{class:"tiptap prose max-w-none min-h-[6rem] p-2 focus:outline-none"}},
   });
-
   useEffect(()=>{ if(editor){ try{ editor.commands.setContent(ensureStringHTML(section.html),false); }catch(e){ editor.commands.setContent("<p></p>",false); } } },[section.id]);
-
   const openImagePicker=()=>fileRef.current?.click();
   const onPickImage=(e)=>{ const f=e.target.files?.[0]; if(!f) return; const r=new FileReader(); r.onload=()=>{ const src=r.result; if(typeof src==="string") editor?.chain().focus().setImage({src}).run(); e.target.value=""; }; r.readAsDataURL(f); };
-
   return (
     <div className="px-2 py-2">
       <div className="flex items-center gap-1 mb-2">
@@ -401,14 +347,12 @@ function SectionEditor({section,onChange}){
   );
 }
 
-// --- Small UI bits (변경 없음) ----------------------------------------------
 function ToolbarButton({ children, onClick, active }) {
   return (
     <button onClick={onClick} className={`px-2 py-1 text-sm rounded-md border ${active?"bg-blue-100 border-blue-300":"bg-white border-gray-300"}`}>{children}</button>
   );
 }
 
-// --- Diagnostics (변경 없음) ------------------------------------------------
 function Diagnostics({ selected }){
   const [results,setResults]=useState([]);
   useEffect(()=>{
