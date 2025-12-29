@@ -24,6 +24,11 @@
 // Runtime hardening below: editors start with safe empty content and only call setContent
 // inside useEffect after each editor is ready. We never pass React nodes to setContent.
 // -----------------------------------------------------------------------------
+// Cornell Note Seed App (React + Tiptap + Firebase)
+// -----------------------------------------------------------------------------
+// 기획자님을 위해 파이어베이스(Firebase) DB와 연결된 버전입니다.
+// 이제 데이터가 구글 서버에 저장되므로, 어디서 접속해도 똑같은 노트를 볼 수 있습니다.
+// -----------------------------------------------------------------------------
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EditorContent, useEditor } from "@tiptap/react";
@@ -32,13 +37,30 @@ import Placeholder from "@tiptap/extension-placeholder";
 import Image from "@tiptap/extension-image";
 import Link from "@tiptap/extension-link";
 import { DragDropContext, Droppable, Draggable } from "react-beautiful-dnd";
+
+// [1] 파이어베이스 추가 (중요!)
+import { initializeApp } from "firebase/app";
+import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot, query, orderBy } from "firebase/firestore";
+
+// --- 파이어베이스 설정 (기획자님의 열쇠) ---
+const firebaseConfig = {
+  apiKey: "AIzaSyAwxaLsgOVoPclbbPR0gMl4ivFTOBm2YVk",
+  authDomain: "wikinote-e6127.firebaseapp.com",
+  projectId: "wikinote-e6127",
+  storageBucket: "wikinote-e6127.firebasestorage.app",
+  messagingSenderId: "474564012678",
+  appId: "1:474564012678:web:936c5da38f5f387f753f07"
+};
+
+// 앱과 DB 시작!
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+
 // --- Brand -----------------------------------------------------------------
-const BRAND_ICON = "✏️"; // 상단 아이콘 (📓/✏️/📚 등으로 바꿔도 돼요)
-const BRAND_TITLE = "WikiNote"; // 상단 타이틀 텍스트
+const BRAND_ICON = "✏️";
+const BRAND_TITLE = "WikiNote (Cloud)";
 
 // --- Utilities -----------------------------------------------------------
-const LS_KEY = "cornell.notes.v3"; // bump key (structure change)
-
 function uid() {
   try { if (typeof crypto !== "undefined" && crypto?.randomUUID) return crypto.randomUUID(); } catch (_) {}
   return "id_" + Math.random().toString(36).slice(2);
@@ -53,137 +75,115 @@ function sectionsToHTML(sections = []) {
   return sections.map(s => `<section><h3>${s.cue||""}</h3>${ensureStringHTML(s.html)}</section>`).join("\n");
 }
 
-// --- Sample Notes (for first-time users) ----------------------------------
-function makeSampleNote({ title, unit, tags = [], summary = "", cueLines = [], sectionsHtml = [] }) {
-  const cue = cueLines.join("\n");
-  const sections = cueLines.map((c, i) => {
-    const html = sectionsHtml[i] || "<p></p>";
-    return { id: uid(), cue: c, html, text: stripTags(html), collapsed: false };
-  });
-  return {
-    id: uid(), title, unit, tags, summary, cue, sections,
-    notesHTML: sectionsToHTML(sections),
-    notesText: sections.map(s => `${s.cue}\n${stripTags(s.html)}`).join("\n\n"),
-    createdAt: nowISO(), updatedAt: nowISO(),
-  };
-}
-
-function sampleNotes() {
-  const n1 = makeSampleNote({
-    title: "수학 I — 극한의 개념",
-    unit: "수학 I / 극한",
-    tags: ["수학", "극한", "미적분"],
-    summary: "좌/우극한이 동일하면 극한 존재. 함수값과 극한값은 다를 수 있음.",
-    cueLines: ["극한의 직관적 의미", "좌극한/우극한", "연속성과의 관계"],
-    sectionsHtml: [
-      "<p>x→a일 때 f(x)가 가까워지는 값에 대한 개념 정리</p>",
-      "<ul><li>좌극한 lim<sub>x→a-</sub> f(x)</li><li>우극한 lim<sub>x→a+</sub> f(x)</li><li>같으면 극한 존재</li></ul>",
-      "<p>연속이면 함수값 = 극한값. 불연속 유형: 제거/도약/무한</p>",
-    ],
-  });
-  const n2 = makeSampleNote({
-    title: "생명과학 — 광합성 요약",
-    unit: "생명과학 / 식물",
-    tags: ["생명과학", "광합성"],
-    summary: "명반응에서 ATP/NADPH 생성, 암반응(Calvin)에서 탄소고정.",
-    cueLines: ["명반응", "암반응(Calvin cycle)", "광합성에 영향 주는 요인"],
-    sectionsHtml: [
-      "<p>빛 사용, 틸라코이드 막, 물의 광분해 → O<sub>2</sub></p>",
-      "<p>RuBisCO에 의한 CO<sub>2</sub> 고정, G3P 형성</p>",
-      "<ul><li>빛의 세기</li><li>CO<sub>2</sub> 농도</li><li>온도</li></ul>",
-    ],
-  });
-  return [n1, n2];
-}
-
-
 function createEmptyNote() {
   return { id: uid(), title: "새 노트", cue: "", sections: [], summary: "", tags: [], unit: "", createdAt: nowISO(), updatedAt: nowISO(), notesHTML: "", notesText: "" };
 }
 
-function loadNotes(){ try{const raw=typeof localStorage!=="undefined"?localStorage.getItem(LS_KEY):null; if(!raw) return []; return JSON.parse(raw);}catch{return [];} }
-function saveNotes(n){ try{ if(typeof localStorage!=="undefined") localStorage.setItem(LS_KEY, JSON.stringify(n)); }catch{} }
+// [삭제됨] loadNotes, saveNotes (이제 로컬스토리지 대신 DB를 씁니다)
 
 function useDebouncedEffect(effect,deps,delay=600){ useEffect(()=>{const h=setTimeout(effect,delay); return ()=>clearTimeout(h);},[...deps,delay]); }
 
 // --- Main App ------------------------------------------------------------
 export default function App(){
-  const [notes,setNotes]=useState(()=>{
-  const loaded = loadNotes();
-  if (loaded.length) return loaded;     // 기존 사용자 데이터는 그대로
-  return sampleNotes();                 // 첫 방문자에게 예시 노트 제공
-});
-  const [selectedId,setSelectedId]=useState(notes[0]?.id||null);
-  const selected=useMemo(()=>notes.find(n=>n.id===selectedId)||null,[notes,selectedId]);
-  const [query,setQuery]=useState("");
-// --- tags input state
-const [tagInput, setTagInput] = useState("");
-
-// 태그 추가/삭제
-const addTag = (raw) => {
-  if (!selected) return;
-  const t = (raw || "").trim();
-  if (!t) return;
-  const uniq = Array.from(new Set([...(selected.tags || []), t]));
-  updateSelected({ tags: uniq });
-  setTagInput("");
-};
-const removeTag = (t) => {
-  if (!selected) return;
-  updateSelected({ tags: (selected.tags || []).filter(x => x !== t) });
-};
-
-// 노트 삭제
-const deleteSelectedNote = () => {
-  if (!selected) return;
-  const hasContent =
-    (selected.sections || []).some(s => stripTags(s.html) !== "") ||
-    stripTags(selected.summary) !== "" ||
-    (selected.title && selected.title !== "새 노트");
-
-  const ok = window.confirm(
-    hasContent
-      ? "이 노트를 삭제할까요? (복구할 수 없어요)"
-      : "빈 노트를 삭제할까요?"
-  );
-  if (!ok) return;
-
-  setNotes(prev => {
-    const next = prev.filter(n => n.id !== selected.id);
-    setSelectedId(next[0]?.id || null);
-    return next;
-  });
-};
-
-// 섹션 삭제
-const deleteSection = (id) => {
-  if (!selected) return;
-  const s = (selected.sections || []).find(x => x.id === id);
-  const has = s && stripTags(s.html) !== "";
-  if (has && !window.confirm("이 섹션을 삭제할까요?")) return;
-  const sections = (selected.sections || []).filter(x => x.id !== id);
-  updateSelected({ sections });
-};
-  useDebouncedEffect(()=>saveNotes(notes),[notes],400);
+  // [2] 상태 관리: DB에서 불러오기 전엔 빈 배열
+  const [notes, setNotes] = useState([]);
+  const [selectedId, setSelectedId] = useState(null);
   
-function truncateTitle(str, maxLength = 7) {
-  if (!str) return "";
-  return str.length > maxLength ? str.slice(0, maxLength) + "…" : str;
-}
+  // 선택된 노트 찾기
+  const selected = useMemo(() => notes.find(n => n.id === selectedId) || null, [notes, selectedId]);
+  
+  const [query, setQuery] = useState("");
+  const [tagInput, setTagInput] = useState("");
 
-useEffect(()=>{
-  if(selected){
-    document.title = `${truncateTitle(selected.title, 7)} - ✏️WikiNote`;
-  } else {
-    document.title = "✏️WikiNote";
+  // [3] DB 실시간 연결 (제일 중요한 부분!)
+  // 앱이 켜지면 파이어베이스 'notes' 컬렉션을 구독합니다.
+  useEffect(() => {
+    const q = query(collection(db, "notes"), orderBy("updatedAt", "desc"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      // DB가 바뀌면 여기로 데이터가 쏫아져 들어옵니다.
+      const loadedNotes = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
+      setNotes(loadedNotes);
+      
+      // 만약 선택된 노트가 없으면 첫번째꺼 선택
+      if (!selectedId && loadedNotes.length > 0) {
+        setSelectedId(loadedNotes[0].id);
+      }
+    });
+    return () => unsubscribe(); // 앱 끌 때 연결 해제
+  }, []); // 처음에 한 번만 실행
+
+  // [4] 자동 저장 (내용이 바뀌면 DB에 저장)
+  useDebouncedEffect(() => {
+    if (selected) {
+      // 선택된 노트만 DB에 덮어쓰기 (Update)
+      const docRef = doc(db, "notes", selected.id);
+      setDoc(docRef, selected)
+        .then(() => console.log("자동 저장 완료:", selected.title))
+        .catch(err => console.error("저장 실패:", err));
+    }
+  }, [selected], 800); // 0.8초 동안 입력 없으면 저장
+
+  // 태그 추가
+  const addTag = (raw) => {
+    if (!selected) return;
+    const t = (raw || "").trim();
+    if (!t) return;
+    const uniq = Array.from(new Set([...(selected.tags || []), t]));
+    updateSelected({ tags: uniq });
+    setTagInput("");
+  };
+  
+  const removeTag = (t) => {
+    if (!selected) return;
+    updateSelected({ tags: (selected.tags || []).filter(x => x !== t) });
+  };
+
+  // [5] 노트 삭제 (DB에서 삭제)
+  const deleteSelectedNote = async () => {
+    if (!selected) return;
+    const ok = window.confirm("정말 이 노트를 삭제하시겠습니까? (DB에서 완전히 삭제됩니다)");
+    if (!ok) return;
+
+    try {
+      await deleteDoc(doc(db, "notes", selected.id)); // DB 삭제 명령
+      // 화면에서는 onSnapshot이 알아서 업데이트 해줌
+      setSelectedId(null); 
+    } catch (e) {
+      alert("삭제 실패: " + e.message);
+    }
+  };
+
+  // [6] 새 노트 만들기 (DB에 추가)
+  const createNewNote = async () => {
+    const n = createEmptyNote();
+    // 로컬 상태를 먼저 업데이트하는 게 아니라, DB에 넣으면 onSnapshot이 알아서 가져옴
+    // 하지만 빠른 반응을 위해 로컬에도 추가하는 척 할 수 있지만, 여기선 심플하게 바로 저장
+    try {
+      await setDoc(doc(db, "notes", n.id), n);
+      setSelectedId(n.id);
+    } catch (e) {
+      alert("생성 실패: " + e.message);
+    }
+  };
+
+  function truncateTitle(str, maxLength = 7) {
+    if (!str) return "";
+    return str.length > maxLength ? str.slice(0, maxLength) + "…" : str;
   }
-},[selected]);
-  
+
+  useEffect(()=>{
+    if(selected){
+      document.title = `${truncateTitle(selected.title, 7)} - ✏️WikiNote`;
+    } else {
+      document.title = "✏️WikiNote";
+    }
+  },[selected]);
+   
   const updateSelected=(patch)=>{
     if(!selected) return;
     let next={...selected,...patch};
 
-    // Handle cue changes (index-based mapping)
+    // 큐(Cue) 라인 변경 로직 (기존 유지)
     if(Object.prototype.hasOwnProperty.call(patch, "cue")){
       const lines=(patch.cue||"").split(/\n+/);
       const prev=selected.sections||[];
@@ -192,25 +192,22 @@ useEffect(()=>{
         if(s) return { ...s, cue: line };
         return { id: uid(), cue: line, html: "<p></p>", text: "", collapsed: false };
       });
-      // For any leftover previous sections beyond new line count:
       for(let i=lines.length;i<prev.length;i++){
         const s = prev[i];
         if(stripTags(s.html)===""){
-          // No content → drop entirely
           continue;
         } else {
-          // Has content → keep as untitled (empty cue)
           newSections.push({ ...s, cue: "" });
         }
       }
       next.sections = newSections;
     }
 
-    // Derive HTML/Text for search/export
     next.notesHTML=sectionsToHTML(next.sections||[]);
     next.notesText=(next.sections||[]).map(s=>`${s.cue}\n${stripTags(s.html)}`).join("\n\n");
     next.updatedAt=nowISO();
 
+    // 로컬 상태 즉시 업데이트 (화면 버벅임 방지)
     setNotes(prev=>prev.map(n=>n.id===selected.id?next:n));
   };
 
@@ -246,11 +243,11 @@ useEffect(()=>{
       className="px-3 py-2 flex-1 bg-gray-100 rounded-xl"
     />
       <button
-        onClick={()=>{const n=createEmptyNote(); setNotes([n,...notes]); setSelectedId(n.id);}}
+        onClick={createNewNote} // [수정] 새 노트 함수 연결
         className="px-3 py-2 bg-blue-500 text-white rounded-xl"
       >+ 새 노트</button>
       <button
-        onClick={deleteSelectedNote}
+        onClick={deleteSelectedNote} // [수정] 삭제 함수 연결
         disabled={!selected}
         className="px-3 py-2 bg-red-500 text-white rounded-xl disabled:opacity-50"
       >노트 삭제</button>
@@ -260,6 +257,7 @@ useEffect(()=>{
 
       <main className="grid grid-cols-4 gap-4">
         <aside className="col-span-1 bg-white rounded-xl shadow p-2 overflow-y-auto">
+          {filtered.length === 0 && <div className="p-4 text-center text-gray-400">노트가 없습니다.<br/>새 노트를 추가해보세요!</div>}
           {filtered.map(n=>(
             <div key={n.id} onClick={()=>setSelectedId(n.id)} className={`p-2 border rounded mb-2 cursor-pointer ${selectedId===n.id?"bg-blue-100 border-blue-400":"hover:bg-gray-50"}`}>
               <div className="font-medium">{n.title||"(제목없음)"}</div>
@@ -362,7 +360,7 @@ useEffect(()=>{
   );
 }
 
-// --- Section Editor -----------------------------------------------------
+// --- Section Editor (변경 없음) ---------------------------------------------
 function SectionEditor({section,onChange}){
   const fileRef = useRef(null);
   const editor=useEditor({
@@ -400,24 +398,21 @@ function SectionEditor({section,onChange}){
   );
 }
 
-// --- Small UI bits ------------------------------------------------------
+// --- Small UI bits (변경 없음) ----------------------------------------------
 function ToolbarButton({ children, onClick, active }) {
   return (
     <button onClick={onClick} className={`px-2 py-1 text-sm rounded-md border ${active?"bg-blue-100 border-blue-300":"bg-white border-gray-300"}`}>{children}</button>
   );
 }
 
-// --- Diagnostics & Tests -------------------------------------------------
+// --- Diagnostics (변경 없음) ------------------------------------------------
 function Diagnostics({ selected }){
   const [results,setResults]=useState([]);
-
   useEffect(()=>{
     const r=[];
-
-    // Test A: Index-based mapping
     try{
       const before={ sections:[ {id:"a",cue:"Q1",html:"<p>x</p>"}, {id:"b",cue:"Q2",html:"<p>y</p>"} ] };
-      const cueChanged="New1\nNew2\nNew3"; // added one more line
+      const cueChanged="New1\nNew2\nNew3";
       const lines=cueChanged.split(/\n+/);
       const prev=before.sections;
       const newSections=lines.map((line,i)=> prev[i]?{...prev[i],cue:line}:{id:"new_"+i,cue:line,html:"<p></p>",text:""});
@@ -425,34 +420,26 @@ function Diagnostics({ selected }){
       const ok = newSections[0].id==="a" && newSections[1].id==="b" && newSections[2].cue==="New3";
       r.push([ok, "Index mapping preserves existing by index; new gets appended"]);
     }catch(e){ r.push([false, "Index mapping threw: "+e?.message]); }
-
-    // Test B: Deleting cue lines drops empty, keeps non-empty as untitled
     try{
       const prev=[ {id:"a",cue:"Q1",html:"<p></p>"}, {id:"b",cue:"Q2",html:"<p>has</p>"} ];
-      const lines=["OnlyOne"]; // shrink to one line
+      const lines=["OnlyOne"]; 
       const res=[...lines.map((l,i)=> prev[i]?{...prev[i],cue:l}:{id:uid(),cue:l,html:"<p></p>"})];
       for(let i=lines.length;i<prev.length;i++){ const s=prev[i]; if(stripTags(s.html)!=="") res.push({...s,cue:""}); }
       const ok = res.length===2 && res[0].cue==="OnlyOne" && res[1].cue==="" && stripTags(res[1].html)==="has";
       r.push([ok, "Cue deletion rule: drop empty, keep content as untitled"]);
     }catch(e){ r.push([false, "Deletion rule test threw: "+e?.message]); }
-
-    // Test C: Reorder logic
     try{
       const arr=[{id:"a"},{id:"b"},{id:"c"}];
       const [x]=arr.splice(0,1); arr.splice(2,0,x);
       r.push([arr.map(s=>s.id).join("")==="bca", "Reorder moves item correctly"]);
     }catch(e){ r.push([false, "Reorder test threw: "+e?.message]); }
-
-    // Test D: Collapse toggle flag persist
     try{
       const s={id:"a",collapsed:false};
       const toggled={...s,collapsed:!s.collapsed};
       r.push([toggled.collapsed===true, "Collapse toggles true→false"]);
     }catch(e){ r.push([false, "Collapse test threw: "+e?.message]); }
-
     setResults(r);
   },[selected?.id]);
-
   return (
     <details className="mt-3 text-sm text-gray-600">
       <summary>진단 / 테스트 ({results.filter(([ok])=>ok).length}/{results.length} 통과)</summary>
