@@ -36,7 +36,8 @@ import StarterKit from "@tiptap/starter-kit";
 import Placeholder from "@tiptap/extension-placeholder";
 import Image from "@tiptap/extension-image";
 import Link from "@tiptap/extension-link";
-import { DragDropContext, Droppable, Draggable } from "react-beautiful-dnd";
+// from 부분이 바뀌었습니다!
+import { DragDropContext, Droppable, Draggable } from "@hello-pangea/dnd";
 
 // [1] 파이어베이스 추가 (중요!)
 import { initializeApp } from "firebase/app";
