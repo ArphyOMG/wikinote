@@ -98,10 +98,10 @@ export default function App(){
 
   // [3] DB 실시간 연결 (제일 중요한 부분!)
   // 앱이 켜지면 파이어베이스 'notes' 컬렉션을 구독합니다.
-useEffect(() => {
+  useEffect(() => {
   // 이제 명확합니다!
-  const q = firestoreQuery(collection(db, "notes"), orderBy("updatedAt", "desc"));
-  const unsubscribe = onSnapshot(q, (snapshot) => {
+    const q = firestoreQuery(collection(db, "notes"), orderBy("updatedAt", "desc"));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
   ...
       // DB가 바뀌면 여기로 데이터가 쏫아져 들어옵니다.
       const loadedNotes = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id }));
