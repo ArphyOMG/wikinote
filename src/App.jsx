@@ -82,9 +82,8 @@ function noteToDocumentPayload(note) {
     .map(s => `${s.cue || ""}
 ${stripTags(ensureStringHTML(s.html))}`.trim())
     .filter(Boolean)
-    .join("
+    .join("\n\n");
 
-");
   return {
     doc_id: note.id,
     title: note.title || "Untitled",
