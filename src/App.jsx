@@ -523,14 +523,20 @@ function SectionEditor({section,onChange,noteId,onOpenLinks}){
         <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={onPickImage} />
         <div className="flex-1" />
         <ToolbarButton
-          onClick={() => {
-            if (!onOpenLinks) return;
-            if (!sel.text || sel.text.length < 5) return;
-            onOpenLinks({ noteId, sectionId: section.id, from: sel.from, to: sel.to, text: sel.text });
-          }}
-        >
-          🔗 연결 보기
-        </ToolbarButton>
+          onMouseDown={(e) => {
+          e.preventDefault(); // selection 유지 핵심
+          if (!onOpenLinks || !editor) return;
+
+          const { from, to } = editor.state.selection;
+          const t = editor.state.doc.textBetween(from, to, "\n").trim();
+          if (!t || t.length < 5) return;
+
+          onOpenLinks({ noteId, sectionId: section.id, from, to, text: t });
+        }}
+      >
+        🔗 연결 보기
+      </ToolbarButton>
+
         <div className="mx-2 w-px h-5 bg-gray-300" />
         <ToolbarButton onClick={()=>{ const url=prompt("링크 URL"); if(url) editor?.chain().focus().extendMarkRange("link").setLink({href:url}).run(); }}>🔗 링크</ToolbarButton>
         <ToolbarButton onClick={()=>editor?.chain().focus().unsetLink().run()}>링크 해제</ToolbarButton>
@@ -540,11 +546,18 @@ function SectionEditor({section,onChange,noteId,onOpenLinks}){
   );
 }
 
-function ToolbarButton({ children, onClick, active }) {
+function ToolbarButton({ children, active, ...props }) {
   return (
-    <button onClick={onClick} className={`px-2 py-1 text-sm rounded-md border ${active?"bg-blue-100 border-blue-300":"bg-white border-gray-300"}`}>{children}</button>
+    <button
+      type="button"
+      {...props}
+      className={`px-2 py-1 text-sm rounded-md border ${active ? "bg-blue-100 border-blue-300" : "bg-white border-gray-300"}`}
+    >
+      {children}
+    </button>
   );
 }
+
 
 function Diagnostics({ selected }){
   const [results,setResults]=useState([]);
