@@ -46,8 +46,55 @@ function ensureStringHTML(v) { return typeof v === "string" ? v : "<p></p>"; }
 function stripTags(html = "") { if (typeof window === "undefined") return String(html).replace(/<[^>]*>/g," ").trim(); const d=document.createElement("div"); d.innerHTML=ensureStringHTML(html); return (d.textContent||"").trim(); }
 function tokenize(q="") { return q.toLowerCase().split(/\s+/).map(s=>s.trim()).filter(Boolean); }
 
+// --- LLM API (local backend proxy: /api -> http://localhost:4000) ----------
+const API_BASE = "/api";
+
+async function apiPost(path, body) {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = json?.error?.message || `API Error (${res.status})`;
+    throw new Error(msg);
+  }
+  return json;
+}
+
+function clampToOneSentence(text = "") {
+  const t = String(text).replace(/\s+/g, " ").trim();
+  if (t.length <= 0) return "";
+  // 첫 문장만 추출(한국어/영문 단순 처리)
+  const m = t.match(/^(.+?[.!?。])\s/);
+  if (m?.[1]) return m[1].trim();
+  return t;
+}
+
 function sectionsToHTML(sections = []) {
   return sections.map(s => `<section><h3>${s.cue||""}</h3>${ensureStringHTML(s.html)}</section>`).join("\n");
+}
+
+function noteToDocumentPayload(note) {
+  // Backend 검색 인덱싱용: cue/notes/summary를 평문으로 전달
+  const notesText = (note.sections || [])
+    .map(s => `${s.cue || ""}
+${stripTags(ensureStringHTML(s.html))}`.trim())
+    .filter(Boolean)
+    .join("\n\n");
+
+  return {
+    doc_id: note.id,
+    title: note.title || "Untitled",
+    notebook_id: "default",
+    tags: note.tags || [],
+    contentBySection: {
+      cue: (note.cue || "").trim(),
+      notes: notesText,
+      summary: (note.summary || "").trim(),
+    },
+  };
 }
 
 function createEmptyNote() {
@@ -65,6 +112,15 @@ export default function App(){
   // 여기서 사용하는 'query'는 검색어를 뜻하는 변수입니다. (파이어베이스 query 아님!)
   const [query, setQuery] = useState("");
   const [tagInput, setTagInput] = useState("");
+
+  // --- LLM: Claim Links Panel state ---------------------------------------
+  const [llmOpen, setLlmOpen] = useState(false);
+  const [llmBusy, setLlmBusy] = useState(false);
+  const [llmMsg, setLlmMsg] = useState("");
+  const [activeClaim, setActiveClaim] = useState(null);
+  const [evidenceCandidates, setEvidenceCandidates] = useState([]);
+  const [includeChunkIds, setIncludeChunkIds] = useState(new Set());
+  const [suggestions, setSuggestions] = useState([]);
 
   // [3] DB 실시간 연결
   useEffect(() => {
@@ -86,7 +142,15 @@ export default function App(){
     if (selected) {
       const docRef = doc(db, "notes", selected.id);
       setDoc(docRef, selected)
-        .then(() => console.log("자동 저장 완료:", selected.title))
+        .then(async () => {
+          console.log("자동 저장 완료:", selected.title);
+          // LLM 검색/RAG를 위한 백엔드 인덱싱(베스트-에포트)
+          try {
+            await apiPost("/v1/documents:upsert", noteToDocumentPayload(selected));
+          } catch (e) {
+            console.warn("백엔드 인덱싱 실패(무시 가능):", e.message);
+          }
+        })
         .catch(err => console.error("저장 실패:", err));
     }
   }, [selected], 800);
@@ -290,7 +354,40 @@ export default function App(){
                                 </div>
                               </div>
                               {!sec.collapsed && (
-                                <SectionEditor section={sec} onChange={(patch)=>updateSection(sec.id,patch)} />
+                                <SectionEditor section={sec} onChange={(patch)=>updateSection(sec.id,patch)} noteId={selected.id} onOpenLinks={async (payload)=>{
+                                  setLlmMsg("");
+                                  setLlmBusy(true);
+                                  try {
+                                    // Claim upsert
+                                    const sentence = clampToOneSentence(payload.text);
+                                    const clientKey = `${payload.noteId}:${payload.sectionId}:${payload.from}:${payload.to}`;
+                                    const up = await apiPost("/v1/claims:upsert", {
+                                      doc_id: payload.noteId,
+                                      section: "notes",
+                                      pos_from: payload.from,
+                                      pos_to: payload.to,
+                                      sentence_text: sentence,
+                                      client_claim_key: clientKey,
+                                    });
+                                    setActiveClaim(up.claim);
+                                    setLlmOpen(true);
+                                    // Evidence search
+                                    const ev = await apiPost("/v1/evidence:search", {
+                                      seed: { type: "claim", claim_id: up.claim.claim_id },
+                                      scope: { notebook_id: "default", include_sections: ["cue","notes","summary"] },
+                                      top_k: 12,
+                                      strategy: "hybrid",
+                                    });
+                                    setEvidenceCandidates(ev.evidence_candidates || []);
+                                    const defaults = new Set((ev.evidence_candidates || []).slice(0,5).map(x=>x.chunk_id));
+                                    setIncludeChunkIds(defaults);
+                                    setSuggestions([]);
+                                  } catch (e) {
+                                    setLlmMsg(e.message);
+                                  } finally {
+                                    setLlmBusy(false);
+                                  }
+                                }} />
                               )}
                             </div>
                           )}
@@ -305,6 +402,75 @@ export default function App(){
               <label className="text-sm text-gray-600 mt-3 mb-1">요약</label>
               <textarea value={selected.summary} onChange={e=>updateSelected({summary:e.target.value})} placeholder="핵심 내용을 3~5문장으로 요약" className="p-2 border rounded min-h-[5rem]" />
               <Diagnostics selected={selected} />
+
+              {llmOpen && (
+                <LLMLinksPanel
+                  open={llmOpen}
+                  onClose={() => setLlmOpen(false)}
+                  busy={llmBusy}
+                  message={llmMsg}
+                  claim={activeClaim}
+                  evidenceCandidates={evidenceCandidates}
+                  includeChunkIds={includeChunkIds}
+                  setIncludeChunkIds={setIncludeChunkIds}
+                  suggestions={suggestions}
+                  setSuggestions={setSuggestions}
+                  onSuggest={async () => {
+                    if (!activeClaim) return;
+                    setLlmBusy(true);
+                    setLlmMsg("");
+                    try {
+                      const include = Array.from(includeChunkIds);
+                      if (include.length === 0) throw new Error("근거 청크를 최소 1개 선택해야 합니다.");
+                      const sug = await apiPost("/v1/relations:suggest", {
+                        from_claim_id: activeClaim.claim_id,
+                        evidence: { include_chunk_ids: include, exclude_chunk_ids: [] },
+                        options: { max_suggestions: 5, must_include_evidence: true, tone: "concise" },
+                      });
+                      setSuggestions(sug.suggestions || []);
+                    } catch (e) {
+                      setLlmMsg(e.message);
+                    } finally {
+                      setLlmBusy(false);
+                    }
+                  }}
+                  onApprove={async (s) => {
+                    if (!activeClaim) return;
+                    setLlmBusy(true);
+                    setLlmMsg("");
+                    try {
+                      const clientKey = `draft:${s.to_claim_draft.doc_id}:${s.to_claim_draft.section}:${(s.to_claim_draft.sentence_text||"").slice(0,32)}`;
+                      const resp = await apiPost("/v1/relations:approve", {
+                        from_claim_id: activeClaim.claim_id,
+                        to_claim: {
+                          doc_id: s.to_claim_draft.doc_id,
+                          section: s.to_claim_draft.section,
+                          pos_from: s.to_claim_draft.pos_from ?? 0,
+                          pos_to: s.to_claim_draft.pos_to ?? (s.to_claim_draft.sentence_text || "").length,
+                          sentence_text: s.to_claim_draft.sentence_text,
+                          client_claim_key: clientKey,
+                        },
+                        relation: {
+                          type: s.type,
+                          explanation: s.explanation_one_liner,
+                          confidence: s.confidence,
+                        },
+                        evidence: (s.evidence || []).map(e => ({
+                          chunk_id: e.chunk_id,
+                          quote: e.quote,
+                          pos_from: null,
+                          pos_to: null,
+                        })),
+                      });
+                      setLlmMsg(`저장 완료: ${resp.relation?.relation_id || ""}`);
+                    } catch (e) {
+                      setLlmMsg(e.message);
+                    } finally {
+                      setLlmBusy(false);
+                    }
+                  }}
+                />
+              )}
             </>
           )}
         </section>
@@ -313,7 +479,7 @@ export default function App(){
   );
 }
 
-function SectionEditor({section,onChange}){
+function SectionEditor({section,onChange,noteId,onOpenLinks}){
   const fileRef = useRef(null);
   const editor=useEditor({
     extensions:[
@@ -327,6 +493,23 @@ function SectionEditor({section,onChange}){
     editorProps:{attributes:{class:"tiptap prose max-w-none min-h-[6rem] p-2 focus:outline-none"}},
   });
   useEffect(()=>{ if(editor){ try{ editor.commands.setContent(ensureStringHTML(section.html),false); }catch(e){ editor.commands.setContent("<p></p>",false); } } },[section.id]);
+
+  const [sel, setSel] = useState({ text: "", from: 0, to: 0 });
+  useEffect(() => {
+    if (!editor) return;
+    const update = () => {
+      const { from, to } = editor.state.selection;
+      const t = editor.state.doc.textBetween(from, to, "\n").trim();
+      setSel({ text: t, from, to });
+    };
+    editor.on("selectionUpdate", update);
+    editor.on("transaction", update);
+    update();
+    return () => {
+      editor.off("selectionUpdate", update);
+      editor.off("transaction", update);
+    };
+  }, [editor]);
   const openImagePicker=()=>fileRef.current?.click();
   const onPickImage=(e)=>{ const f=e.target.files?.[0]; if(!f) return; const r=new FileReader(); r.onload=()=>{ const src=r.result; if(typeof src==="string") editor?.chain().focus().setImage({src}).run(); e.target.value=""; }; r.readAsDataURL(f); };
   return (
@@ -338,6 +521,22 @@ function SectionEditor({section,onChange}){
         <ToolbarButton onClick={()=>editor?.chain().focus().toggleOrderedList().run()}>1. 리스트</ToolbarButton>
         <ToolbarButton onClick={openImagePicker}>🖼️ 이미지</ToolbarButton>
         <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={onPickImage} />
+        <div className="flex-1" />
+        <ToolbarButton
+          onMouseDown={(e) => {
+          e.preventDefault(); // selection 유지 핵심
+          if (!onOpenLinks || !editor) return;
+
+          const { from, to } = editor.state.selection;
+          const t = editor.state.doc.textBetween(from, to, "\n").trim();
+          if (!t || t.length < 5) return;
+
+          onOpenLinks({ noteId, sectionId: section.id, from, to, text: t });
+        }}
+      >
+        🔗 연결 보기
+      </ToolbarButton>
+
         <div className="mx-2 w-px h-5 bg-gray-300" />
         <ToolbarButton onClick={()=>{ const url=prompt("링크 URL"); if(url) editor?.chain().focus().extendMarkRange("link").setLink({href:url}).run(); }}>🔗 링크</ToolbarButton>
         <ToolbarButton onClick={()=>editor?.chain().focus().unsetLink().run()}>링크 해제</ToolbarButton>
@@ -347,11 +546,18 @@ function SectionEditor({section,onChange}){
   );
 }
 
-function ToolbarButton({ children, onClick, active }) {
+function ToolbarButton({ children, active, ...props }) {
   return (
-    <button onClick={onClick} className={`px-2 py-1 text-sm rounded-md border ${active?"bg-blue-100 border-blue-300":"bg-white border-gray-300"}`}>{children}</button>
+    <button
+      type="button"
+      {...props}
+      className={`px-2 py-1 text-sm rounded-md border ${active ? "bg-blue-100 border-blue-300" : "bg-white border-gray-300"}`}
+    >
+      {children}
+    </button>
   );
 }
+
 
 function Diagnostics({ selected }){
   const [results,setResults]=useState([]);
@@ -394,5 +600,122 @@ function Diagnostics({ selected }){
         {results.map(([ok,msg],i)=>(<li key={i} className={ok?"text-green-700":"text-red-700"}>{ok?"✔":"✖"} {msg}</li>))}
       </ul>
     </details>
+  );
+}
+
+
+function LLMLinksPanel({
+  open,
+  onClose,
+  busy,
+  message,
+  claim,
+  evidenceCandidates,
+  includeChunkIds,
+  setIncludeChunkIds,
+  suggestions,
+  onSuggest,
+  onApprove,
+}) {
+  if (!open) return null;
+  return (
+    <div className="fixed top-0 right-0 h-full w-[420px] bg-white border-l shadow-lg z-50 flex flex-col">
+      <div className="p-3 border-b flex items-center justify-between">
+        <div className="font-semibold">문장 연결 (LLM)</div>
+        <button className="text-sm px-2 py-1 border rounded" onClick={onClose}>닫기</button>
+      </div>
+
+      <div className="p-3 text-sm text-gray-700 border-b">
+        <div className="text-xs text-gray-500 mb-1">기준 Claim</div>
+        <div className="font-medium">{claim?.sentence_text || "-"}</div>
+        {message ? <div className="mt-2 text-red-600">{message}</div> : null}
+        {busy ? <div className="mt-2 text-gray-500">처리 중…</div> : null}
+      </div>
+
+      <div className="p-3 overflow-auto flex-1">
+        <div className="flex items-center justify-between mb-2">
+          <div className="font-semibold text-sm">근거 선택</div>
+          <button
+            className="text-sm px-2 py-1 border rounded disabled:opacity-50"
+            onClick={onSuggest}
+            disabled={busy || !claim}
+          >
+            관계 제안 생성
+          </button>
+        </div>
+
+        <div className="space-y-2">
+          {(evidenceCandidates || []).map((c) => {
+            const checked = includeChunkIds?.has?.(c.chunk_id);
+            return (
+              <label key={c.chunk_id} className="block border rounded p-2">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={!!checked}
+                    onChange={(e) => {
+                      const next = new Set(includeChunkIds || []);
+                      if (e.target.checked) next.add(c.chunk_id);
+                      else next.delete(c.chunk_id);
+                      setIncludeChunkIds(next);
+                    }}
+                  />
+                  <div className="text-xs text-gray-500">
+                    {c.doc_title} / {c.section} (score: {c.score})
+                  </div>
+                </div>
+                <div className="mt-1 text-xs text-gray-700 line-clamp-3">{c.snippet}</div>
+              </label>
+            );
+          })}
+          {(evidenceCandidates || []).length === 0 ? (
+            <div className="text-sm text-gray-500">근거 후보가 없습니다.</div>
+          ) : null}
+        </div>
+
+        <div className="mt-4">
+          <div className="font-semibold text-sm mb-2">관계 제안</div>
+          <div className="space-y-3">
+            {(suggestions || []).map((s) => (
+              <div key={s.suggestion_id} className="border rounded p-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <div className="text-xs text-gray-500">
+                      type: <b>{s.type}</b> / confidence: <b>{s.confidence}</b>
+                    </div>
+                    <div className="mt-1 text-sm">
+                      <b>To</b>: {s.to_claim_draft?.sentence_text}
+                    </div>
+                    <div className="mt-1 text-xs text-gray-700">{s.explanation_one_liner}</div>
+                  </div>
+                  <button
+                    className="text-sm px-2 py-1 border rounded disabled:opacity-50"
+                    onClick={() => onApprove?.(s)}
+                    disabled={busy}
+                  >
+                    승인
+                  </button>
+                </div>
+
+                <div className="mt-2">
+                  <div className="text-xs text-gray-500 mb-1">근거 인용</div>
+                  <ul className="list-disc pl-5 space-y-1">
+                    {(s.evidence || []).map((e, idx) => (
+                      <li key={idx} className="text-xs text-gray-700">
+                        <span className="text-gray-500">{e.chunk_id}: </span>
+                        {e.quote}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            ))}
+            {(suggestions || []).length === 0 ? (
+              <div className="text-sm text-gray-500">아직 제안이 없습니다.</div>
+            ) : null}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
